@@ -1,45 +1,72 @@
-import hashlib
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 import sys
+import hashlib
+import argparse
 import os
 
-# Renk kodları (Windows terminalinde düzgün çalışması için basit tutuldu)
+# Renk kodları
 class Colors:
-    GREEN = '\033[92m'
-    RED = '\033[91m'
-    YELLOW = '\033[93m'
-    RESET = '\033[0m'
+    HEADER = '\033[95m'
+    OKBLUE = '\033[94m'
+    OKGREEN = '\033[92m'
+    WARNING = '\033[93m'
+    FAIL = '\033[91m'
+    ENDC = '\033[0m'
+    BOLD = '\033[1m'
 
 def detect_hash_type(hash_str):
-    """Hash tipini otomatik algılar."""
+    """Hash tipini otomatik tespit eder."""
     hash_str = hash_str.strip()
     
-    # Linux Shadow Formatları
+    # Linux Shadow Hashes
     if hash_str.startswith("$1$"):
-        return "MD5-Crypt"
+        return "md5-crypt"
     elif hash_str.startswith("$5$"):
-        return "SHA-256-Crypt"
+        return "sha256-crypt"
     elif hash_str.startswith("$6$"):
-        return "SHA-512-Crypt"
+        return "sha512-crypt"
     elif hash_str.startswith("$2a$") or hash_str.startswith("$2b$") or hash_str.startswith("$2y$"):
-        return "Blowfish (bcrypt)"
+        return "bcrypt"
     
-    # Ham Hash Uzunluk Kontrolü
-    if len(hash_str) == 64 and all(c in '0123456789abcdefABCDEF' for c in hash_str):
-        return "SHA-256 (Raw)"
-    elif len(hash_str) == 128 and all(c in '0123456789abcdefABCDEF' for c in hash_str):
-        return "SHA-512 (Raw)"
-    elif len(hash_str) == 32 and all(c in '0123456789abcdefABCDEF' for c in hash_str):
-        return "MD5 (Raw)"
-        
-    return "Bilinmeyen"
+    # Raw Hashes (Uzunluğa göre)
+    if len(hash_str) == 32:
+        return "md5"
+    elif len(hash_str) == 40:
+        return "sha1"
+    elif len(hash_str) == 64:
+        return "sha256"
+    elif len(hash_str) == 128:
+        return "sha512"
+    
+    return "unknown"
 
-def crack_raw_hash(target_hash, wordlist_path, algo="sha512"):
-    """Ham (Raw) hash'leri kırar (Sizin verdiğiniz format için)."""
-    print(f"{Colors.YELLOW}[!] Tespit Edilen: {algo}{Colors.RESET}")
-    print(f"{Colors.YELLOW}[+] Hedef Hash: {target_hash[:20]}...{Colors.RESET}")
+def crack_shadow_hash(target_hash, wordlist_path, hash_type):
+    """Linux Shadow ($6$, $5$ vb.) hashlerini kırmak için passlib kullanır."""
+    try:
+        from passlib.hash import md5_crypt, sha256_crypt, sha512_crypt, bcrypt
+    except ImportError:
+        print(f"{Colors.FAIL}[!] Hata: 'passlib' kütüphanesi bulunamadı.{Colors.ENDC}")
+        print(f"{Colors.WARNING}Lütfen 'pip install passlib' komutuyla yükleyin.{Colors.ENDC}")
+        sys.exit(1)
+
+    print(f"{Colors.OKBLUE}[*] Shadow Hash Modu Başlatıldı: {hash_type}{Colors.ENDC}")
     
+    mapper = {
+        "md5-crypt": md5_crypt,
+        "sha256-crypt": sha256_crypt,
+        "sha512-crypt": sha512_crypt,
+        "bcrypt": bcrypt
+    }
+    
+    handler = mapper.get(hash_type)
+    if not handler:
+        print(f"{Colors.FAIL}[!] Desteklenmeyen shadow hash tipi: {hash_type}{Colors.ENDC}")
+        return
+
     if not os.path.exists(wordlist_path):
-        print(f"{Colors.RED}[-] Wordlist dosyası bulunamadı: {wordlist_path}{Colors.RESET}")
+        print(f"{Colors.FAIL}[!] Wordlist dosyası bulunamadı: {wordlist_path}{Colors.ENDC}")
         return
 
     try:
@@ -49,144 +76,127 @@ def crack_raw_hash(target_hash, wordlist_path, algo="sha512"):
                 if not password:
                     continue
                 
-                # Hash hesaplama
-                if algo == "sha512":
-                    computed_hash = hashlib.sha512(password.encode('utf-8')).hexdigest()
-                elif algo == "sha256":
-                    computed_hash = hashlib.sha256(password.encode('utf-8')).hexdigest()
-                elif algo == "md5":
-                    computed_hash = hashlib.md5(password.encode('utf-8')).hexdigest()
-                else:
+                try:
+                    if handler.verify(password, target_hash):
+                        print(f"\n{Colors.OKGREEN}[+] ŞİFRE BULUNDU!{Colors.ENDC}")
+                        print(f"{Colors.BOLD}Hash: {target_hash}{Colors.ENDC}")
+                        print(f"{Colors.BOLD}Şifre: {password}{Colors.ENDC}")
+                        return
+                except Exception:
                     continue
+                
+                # İlerleme göstergesi (isteğe bağlı, çok yavaşlatabilir)
+                # sys.stdout.write('.') 
+                # sys.stdout.flush()
 
-                if computed_hash.lower() == target_hash.lower():
-                    print(f"\n{Colors.GREEN}[+] ŞİFRE BULUNDU!{Colors.RESET}")
-                    print(f"{Colors.GREEN}Şifre: {password}{Colors.RESET}")
-                    print(f"{Colors.GREEN}Hash : {computed_hash}{Colors.RESET}")
-                    return
-                else:
-                    # İlerleme göstergesi (isteğe bağlı, çok hızlı akar)
-                    sys.stdout.write('.')
-                    sys.stdout.flush()
-
-        print(f"\n{Colors.RED}[-] Şifre wordlist içinde bulunamadı.{Colors.RESET}")
+        print(f"\n{Colors.WARNING}[-] Şifre wordlist içinde bulunamadı.{Colors.ENDC}")
         
-    except Exception as e:
-        print(f"{Colors.RED}[-] Hata oluştu: {str(e)}{Colors.RESET}")
+    except KeyboardInterrupt:
+        print(f"\n{Colors.WARNING}[!] İşlem kullanıcı tarafından durduruldu.{Colors.ENDC}")
 
-def main():
-    print("========================================")
-    print("   Multi-Platform Password Cracker v2   ")
-    print("   (Linux Shadow & Raw Hash Desteği)    ")
-    print("========================================\n")
-
-    # Kullanıcıdan hash al
-    target_hash = input("Kırılacak hash'i yapıştırın: ").strip()
+def crack_raw_hash(target_hash, wordlist_path, hash_type):
+    """Ham (Raw) hashleri (örn: 169bd...) kırmak için hashlib kullanır."""
+    print(f"{Colors.OKBLUE}[*] Raw Hash Modu Başlatıldı: {hash_type.upper()}{Colors.ENDC}")
     
-    if not target_hash:
-        print(f"{Colors.RED}[-] Hash girilmedi.{Colors.RESET}")
-        return
-
-    hash_type = detect_hash_type(target_hash)
-    print(f"{Colors.YELLOW}[i] Algılanan Hash Tipi: {hash_type}{Colors.RESET}\n")
-
-    # Wordlist yolu
-    default_wordlist = "rockyou.txt"
-    wordlist_path = input(f"Wordlist dosya yolu (Enter ile '{default_wordlist}'): ").strip()
-    if not wordlist_path:
-        wordlist_path = default_wordlist
-
-    # İşlem türüne göre yönlendirme
-    if "Raw" in hash_type:
-        if "SHA-512" in hash_type:
-            crack_raw_hash(target_hash, wordlist_path, "sha512")
-        elif "SHA-256" in hash_type:
-            crack_raw_hash(target_hash, wordlist_path, "sha256")
-        elif "MD5" in hash_type:
-            crack_raw_hash(target_hash, wordlist_path, "md5")
-    elif hash_type in ["MD5-Crypt", "SHA-256-Crypt", "SHA-512-Crypt"]:
-        print(f"{Colors.RED}[-] Uyarı: Shadow formatı ($x$) şu an bu basit scriptte desteklenmiyor.{Colors.RESET}")
-        print(f"{Colors.YELLOW}[i] Bu format için 'passlib' kütüphanesi ile özel bir fonksiyon gerekir.{Colors.RESET}")
-        # İsterseniz buraya passlib entegrasyonu da eklenebilir ama şimdilik raw odaklı gidelim.
-        # Passlib gerektirmemesi için shadow formatını da manuel parse edip hashlib ile çözebiliriz.
-        # Aşağıda basit bir shadow parser ekliyorum:
-        crack_shadow_hash(target_hash, wordlist_path)
-    else:
-        print(f"{Colors.RED}[-] Desteklenmeyen hash formatı.{Colors.RESET}")
-
-def crack_shadow_hash(full_hash, wordlist_path):
-    """Linux Shadow ($6$salt$hash) formatını manuel olarak çözer."""
-    parts = full_hash.split('$')
-    if len(parts) < 4:
-        print(f"{Colors.RED}[-] Geçersiz Shadow formatı.{Colors.RESET}")
-        return
-
-    algo_id = parts[1]
-    salt = parts[2]
-    stored_hash = parts[3]
-    
-    print(f"{Colors.YELLOW}[+] Shadow Formatı Analiz Edildi:{Colors.RESET}")
-    print(f"    Algoritma ID: {algo_id}")
-    print(f"    Salt: {salt}")
-    
-    import crypt # Not: Windows'ta bu satır hata verir, bu yüzden Windows kullanıcıları için passlib şarttır.
-                 # Ancak kullanıcı Windows'ta ise ve crypt yoksa, bu fonksiyon çalışmaz.
-                 # BU NEDENLE WINDOWS İÇİN PASSLIB ŞARTTIR VEYA SADECE RAW HASH KULLANILMALIDIR.
-    
-    # Windows uyumluluğu için passlib kontrolü
-    try:
-        from passlib.hash import sha512_crypt, sha256_crypt, md5_crypt
-        use_passlib = True
-    except ImportError:
-        use_passlib = False
-        if os.name == 'nt':
-            print(f"{Colors.RED}[-] Windows'ta Shadow hash kırmak için 'pip install passlib' gereklidir.{Colors.RESET}")
-            print(f"{Colors.YELLOW}[i] Sadece Raw (ham) hash deneyebilirsiniz.{Colors.RESET}")
-            return
-
     if not os.path.exists(wordlist_path):
-        # Basit test kelimesi oluştur (dosya yoksa)
-        print(f"{Colors.YELLOW}[!] Wordlist bulunamadı, basit test yapılıyor...{Colors.RESET}")
-        test_words = ["123456", "password", "test123", "linux", "root"]
-    else:
+        print(f"{Colors.FAIL}[!] Wordlist dosyası bulunamadı: {wordlist_path}{Colors.ENDC}")
+        return
+
+    hash_func_map = {
+        "md5": hashlib.md5,
+        "sha1": hashlib.sha1,
+        "sha256": hashlib.sha256,
+        "sha512": hashlib.sha512
+    }
+    
+    func = hash_func_map.get(hash_type)
+    if not func:
+        print(f"{Colors.FAIL}[!] Desteklenmeyen raw hash tipi: {hash_type}{Colors.ENDC}")
+        return
+
+    try:
         with open(wordlist_path, 'r', encoding='utf-8', errors='ignore') as f:
-            # Dosyayı satır satır okumak yerine bellek için iteratör kullanıyoruz
+            count = 0
             for line in f:
                 password = line.strip()
-                if not password: continue
+                if not password:
+                    continue
                 
-                if algo_id == "6":
-                    if use_passlib:
-                        if sha512_crypt.verify(password, full_hash):
-                            print_found(password)
-                            return
-                    else:
-                        # Fallback (Windows'ta passlib yoksa çalışmaz)
-                        pass 
-                elif algo_id == "5":
-                     if use_passlib:
-                        if sha256_crypt.verify(password, full_hash):
-                            print_found(password)
-                            return
-                elif algo_id == "1":
-                     if use_passlib:
-                        if md5_crypt.verify(password, full_hash):
-                            print_found(password)
-                            return
-                            
-        print(f"{Colors.RED}[-] Şifre bulunamadı.{Colors.RESET}")
+                # Hash hesapla
+                computed_hash = func(password.encode('utf-8')).hexdigest()
+                
+                if computed_hash == target_hash:
+                    print(f"\n{Colors.OKGREEN}[+] ŞİFRE BULUNDU!{Colors.ENDC}")
+                    print(f"{Colors.BOLD}Hash: {target_hash}{Colors.ENDC}")
+                    print(f"{Colors.BOLD}Şifre: {password}{Colors.ENDC}")
+                    return
+                
+                count += 1
+                if count % 1000 == 0:
+                    print(f"[*] {count} şifre denendi...", end='\r')
 
-def print_found(pwd):
-    print(f"\n{Colors.GREEN}[+] ŞİFRE BULUNDU!{Colors.RESET}")
-    print(f"{Colors.GREEN}Şifre: {pwd}{Colors.RESET}")
+        print(f"\n{Colors.WARNING}[-] Şifre wordlist içinde bulunamadı. ({count} deneme){Colors.ENDC}")
+        
+    except KeyboardInterrupt:
+        print(f"\n{Colors.WARNING}[!] İşlem kullanıcı tarafından durduruldu.{Colors.ENDC}")
+
+def main():
+    parser = argparse.ArgumentParser(description="Multi-Platform Password Cracker (Linux & Raw Hash)")
+    parser.add_argument("-w", "--wordlist", help="Wordlist dosya yolu")
+    parser.add_argument("-H", "--hash", help="Kırılacak hash değeri")
+    parser.add_argument("-t", "--type", help="Hash tipi (manuel seçim için: sha512, sha256, md5, sha512-crypt vb.)", default=None)
+    
+    args = parser.parse_args()
+
+    print(f"{Colors.HEADER}========================================")
+    print(f"   Multi-Platform Password Cracker v2.1")
+    print(f"   (Linux Shadow & Raw Hash Desteği + CLI)")
+    print(f"========================================{Colors.ENDC}\n")
+
+    target_hash = ""
+    wordlist_path = ""
+    force_type = args.type
+
+    # Komut satırından gelen verileri kontrol et
+    if args.hash:
+        target_hash = args.hash.strip()
+        print(f"{Colors.OKBLUE}[*] Hedef Hash (CLI): {target_hash[:20]}...{Colors.ENDC}")
+    else:
+        target_hash = input(f"{Colors.WARNING}Kırılacak hash'i yapıştırın: {Colors.ENDC}").strip()
+
+    if args.wordlist:
+        wordlist_path = args.wordlist
+        print(f"{Colors.OKBLUE}[*] Wordlist Yolu (CLI): {wordlist_path}{Colors.ENDC}")
+    else:
+        wordlist_path = input(f"{Colors.WARNING}Wordlist dosya yolunu girin (örn: rockyou.txt): {Colors.ENDC}").strip()
+
+    if not target_hash:
+        print(f"{Colors.FAIL}[-] Hash girilmedi. Çıkılıyor.{Colors.ENDC}")
+        sys.exit(1)
+    
+    if not wordlist_path:
+        print(f"{Colors.FAIL}[-] Wordlist yolu girilmedi. Çıkılıyor.{Colors.ENDC}")
+        sys.exit(1)
+
+    # Hash tipini tespit et (veya manuel seçimi kullan)
+    if force_type:
+        hash_type = force_type
+        print(f"{Colors.WARNING}[!] Manuel hash tipi seçildi: {hash_type}{Colors.ENDC}")
+    else:
+        hash_type = detect_hash_type(target_hash)
+        print(f"{Colors.OKGREEN}[+] Tespit edilen hash tipi: {hash_type}{Colors.ENDC}")
+
+    if hash_type == "unknown":
+        print(f"{Colors.FAIL}[!] Hash tipi tanınamadı. Lütfen -t parametresi ile manuel belirtin (örn: -t sha512){Colors.ENDC}")
+        sys.exit(1)
+
+    # Kırma işlemine başla
+    if hash_type in ["md5-crypt", "sha256-crypt", "sha512-crypt", "bcrypt"]:
+        crack_shadow_hash(target_hash, wordlist_path, hash_type)
+    elif hash_type in ["md5", "sha1", "sha256", "sha512"]:
+        crack_raw_hash(target_hash, wordlist_path, hash_type)
+    else:
+        print(f"{Colors.FAIL}[!] Bu hash tipi için kırma modülü bulunamadı.{Colors.ENDC}")
 
 if __name__ == "__main__":
-    # Eğer passlib yüklü değilse ve Windows ise uyarı verelim ama çalışmaya devam edelim (Raw için)
-    if os.name == 'nt':
-        try:
-            import passlib
-        except ImportError:
-            print(f"{Colors.YELLOW}[Uyarı] 'passlib' yüklü değil. Sadece Raw (Ham) SHA/MD5 hash'leri kırabilirsiniz.{Colors.RESET}")
-            print(f"{Colors.YELLOW}[Bilgi] Linux Shadow ($6$...) hash'leri için: pip install passlib{Colors.RESET}\n")
-            
     main()
